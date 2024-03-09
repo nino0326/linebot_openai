@@ -1,73 +1,86 @@
 from flask import Flask, request, abort
-
-from linebot import (
-    LineBotApi, WebhookHandler
-)
-from linebot.exceptions import (
-    InvalidSignatureError
-)
-from linebot.models import *
-
-#======python的函數庫==========
-import tempfile, os
-import datetime
-import openai
-import time
-import traceback
-#======python的函數庫==========
+from linebot import LineBotApi, WebhookHandler
+from linebot.exceptions import InvalidSignatureError
+from linebot.models import TextSendMessage
+import os
+import requests
 
 app = Flask(__name__)
-static_tmp_path = os.path.join(os.path.dirname(__file__), 'static', 'tmp')
+
 # Channel Access Token
 line_bot_api = LineBotApi(os.getenv('CHANNEL_ACCESS_TOKEN'))
+
 # Channel Secret
 handler = WebhookHandler(os.getenv('CHANNEL_SECRET'))
-# OPENAI API Key初始化設定
-openai.api_key = os.getenv('OPENAI_API_KEY')
 
+# Claude API Key
+CLAUDE_API_KEY = os.getenv('CLAUDE_API_KEY')
 
-def GPT_response(text):
-    # 接收回應
-    response = openai.Completion.create(model="gpt-3.5-turbo-instruct", prompt=text, temperature=0.5, max_tokens=500)
-    print(response)
-    # 重組回應
-    answer = response['choices'][0]['text'].replace('。','')
-    return answer
+def claude_response(text):
+    # Claude API URL
+    API_URL = "https://claude.anthropic.com/v1/complete"
 
+    # 构建请求体
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {CLAUDE_API_KEY}"
+    }
 
-# 監聽所有來自 /callback 的 Post Request
+    data = {
+        "prompt": text,
+        "max_tokens_to_sample": 500,
+        "temperature": 0.5
+    }
+
+    # 发送请求
+    response = requests.post(API_URL, headers=headers, json=data)
+
+    # 检查请求是否成功
+    if response.status_code == 200:
+        # 获取响应数据
+        result = response.json()
+        answer = result["response"]
+        return answer.strip(".")  # 去除句末句号
+    else:
+        # 处理错误
+        error_message = f"Request failed with status code {response.status_code}"
+        print(error_message)
+        return error_message
+
+# 监听所有来自 /callback 的 Post Request
 @app.route("/callback", methods=['POST'])
 def callback():
     # get X-Line-Signature header value
     signature = request.headers['X-Line-Signature']
+
     # get request body as text
     body = request.get_data(as_text=True)
     app.logger.info("Request body: " + body)
+
     # handle webhook body
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
         abort(400)
+
     return 'OK'
 
-
-# 處理訊息
+# 处理消息
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     msg = event.message.text
+
     try:
-        GPT_answer = GPT_response(msg)
-        print(GPT_answer)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(GPT_answer))
+        claude_answer = claude_response(msg)
+        print(claude_answer)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(claude_answer))
     except:
         print(traceback.format_exc())
-        line_bot_api.reply_message(event.reply_token, TextSendMessage('你所使用的OPENAI API key額度可能已經超過，請於後台Log內確認錯誤訊息'))
-        
+        line_bot_api.reply_message(event.reply_token, TextSendMessage('Claude API调用出现错误,请检查日志'))
 
 @handler.add(PostbackEvent)
 def handle_message(event):
     print(event.postback.data)
-
 
 @handler.add(MemberJoinedEvent)
 def welcome(event):
@@ -77,9 +90,7 @@ def welcome(event):
     name = profile.display_name
     message = TextSendMessage(text=f'{name}歡迎加入')
     line_bot_api.reply_message(event.reply_token, message)
-        
-        
-import os
+
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
